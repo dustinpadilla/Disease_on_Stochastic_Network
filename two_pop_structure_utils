@@ -1,0 +1,627 @@
+##################################################################################
+##################################################################################
+# An R script to setup population structure in households
+#
+# Author:  Dustin Padilla
+#          dustin.padilla@asu.edu
+# Created: April 25, 2016
+#
+# Copyright Dustin Padilla, Every year
+#
+# This script is not guaranteed to be free of bugs and/or errors
+#
+# This script can be freely used and shared as long as the author and 
+# copyright information in this header remain intact.
+#http://www.kateto.net/polnet2015
+##################################################################################
+
+require("igraph")
+require("network") 
+require("sna")
+require("ndtv")
+
+##################################################################################
+##################################################################################
+# Set up the population structure, with kids (vage=0), and adults (vage=1)
+# Kids have to live in a home with at least one adult, so randomly assign
+# them homes with one or two adults
+# http://www.census.gov/hhes/families/files/cps2015/tabF1-all.csv
+# http://www.census.gov/hhes/families/files/cps2015/tabC2-all.csv
+# http://www.census.gov/hhes/families/files/cps2015/tabH2-all.csv
+#
+# assume all "non-family" households consist of one adult
+#
+# fnon_family   Is the number of "non-family" households
+#               We assume these consist of one adult each
+#
+# vnum_kids     Vector of number of kids in "family" households (goes from 0 to 5)
+#               "families" can consist of a couple with no kids
+#
+# prob_num_kids vector of probabilities for observing vnum_kids
+#
+# ftot_kid_with_both_parent_household  Is the fraction of kids living with
+#                                      both parents
+##################################################################################
+# 
+# s1=1
+# s2=5
+# sim=(s1:s5)
+setup_households=function(Npeople
+                          ,fnon_family   
+                          ,vnum_kids     
+                          ,prob_num_kids 
+                          ,ftot_kid_with_both_parent_household 
+                          ,navg_contact_per_day
+){
+  ################################################################################
+  # vid is the id number of the person
+  # vage is 0 if kid, 1 if adult
+  # vdone is 0 if not yet assigned to a household, 1 otherwise
+  ################################################################################
+  vid   = seq(1,Npeople)
+  vage  = rep(0,Npeople)
+  vdone = rep(0,Npeople)
+  
+  vfrom = numeric(0)
+  vto   = numeric(0)
+  vnavg_contact_per_day = numeric(0)
+  
+  ldone = 0
+  while (!ldone){
+    if (sum(vdone)==length(vdone)) ldone = 1
+    
+    ##############################################################################
+    # sample a random number.  If it is less than the fraction of non-family
+    # households we randomly pick a person to assign to a one-person household
+    ##############################################################################
+    y = runif(1)
+    if (y<fnon_family){
+      ############################################################################
+      # iind is the indices of people who have not been assigned to households yet
+      ############################################################################
+      iind = which(vdone==0)
+      if (length(iind)>0){
+        k = sample(iind,1)
+        vdone[k] = 1
+        vage[k] = 1
+      }
+      ##############################################################################
+      # If it is a not a non-family household, then it is a family household
+      ##############################################################################
+    }else{
+      ############################################################################
+      # randomly sample the number of kids in the household.  This could be
+      # zero, if the household consists of a couple without kids
+      ############################################################################
+      nkid = sample(vnum_kids,1,prob=prob_num_kids)
+      ############################################################################
+      # if nkid==0, and it is a family household, then it is a couple
+      ############################################################################
+      if (nkid==0){
+        iind = which(vdone==0)
+        if (length(iind)>1){
+          k = sample(iind,2)
+          vdone[k] = 1
+          vage[k] = 1
+          
+          vfrom = append(vfrom,k[1])
+          vto = append(vto,k[2])
+          vnavg_contact_per_day = append(vnavg_contact_per_day,navg_contact_per_day)
+          
+          vfrom = append(vfrom,k[2])
+          vto = append(vto,k[1])
+          vnavg_contact_per_day = append(vnavg_contact_per_day,navg_contact_per_day)
+        }
+        ############################################################################
+        # if nkid>0, then it is a kid living with parents, and possibly other kids
+        ############################################################################
+      }else{
+        ##########################################################################
+        # randomly sample a uniform number between 0 and 1.  If if is less than
+        # the fraction of kid-households that have two parents, assign two
+        # adults to the household
+        ##########################################################################
+        y = runif(1)
+        nadult = 1
+        if (y<ftot_kid_with_both_parent_household) nadult=2
+        
+        iind = which(vdone==0)
+        if (length(iind)>=(nadult+nkid)){
+          kadult = sample(iind,nadult)
+          kpeople = kadult
+          
+          vdone[kadult] = 1
+          vage[kadult] = 1
+          
+          jind = which(vdone==0)
+          kkid = sample(jind,nkid)
+          kpeople = c(kpeople,kkid)
+          vdone[kkid] = 1
+          vage[kkid] = 0
+          
+          ########################################################################
+          # now fill the who-contacts-who vectors vfrom, and vto
+          ########################################################################
+          for (i in kpeople){
+            for (j in kpeople){
+              if (i!=j){
+                vfrom = append(vfrom,i)
+                vto   = append(vto,j)
+                vnavg_contact_per_day = append(vnavg_contact_per_day,navg_contact_per_day)
+              } # end check that it isn't the same person contacting themselves
+            } # end loop over people in household
+          } # end loop over people in household
+          
+        } # end check that we have at least nkid people left to assign to households
+        
+      } # end check if this was a family household with no kids
+    } # end check if this was a non-family household
+  } # end check whether or not everyone has been assigned to a household
+  
+  ################################################################################
+  ################################################################################
+  # create data frames with the node and vertex information
+  ################################################################################
+  nodes = data.frame(id=vid,age=vage,color=(vage+1))
+  links = data.frame(from=vfrom,to=vto,weight=vnavg_contact_per_day)
+  
+  ################################################################################
+  # put this information into an igraph network object
+  ################################################################################
+  net=graph.data.frame(links, nodes, directed=T)
+  V(net)$vid   = vid 
+  V(net)$vage  = vage
+  E(net)$vfrom = vfrom
+  E(net)$vto   = vto
+  E(net)$vnavg_contact_per_day = vnavg_contact_per_day
+  
+  #net=simplify(net, remove.multiple = T, remove.loops = T) 
+  
+  return(list(net=net,vid=vid,vage=vage,vfrom=vfrom,vto=vto,vnavg_contact_per_day=vnavg_contact_per_day))
+}
+
+##################################################################################
+##################################################################################
+# vn_per_school is a vector containing the distribution of the number of kids per school
+# vnavg_contact_per_day_per_school is a vector, with elements for each school,
+#                                  giving the avg number of contacts per day kids in 
+#                                  each school make
+# vn_per_workplace is a vector containing the distribution of the number of adults per workplace
+# vnavg_contact_per_day_per_workplace is a vector, with elements for each workplace,
+#                                  giving the avg number of contacts per day adults in 
+#                                  each workplace make
+##################################################################################
+setup_schools_and_workplaces=function(net
+                                      ,vn_per_school
+                                      ,vnavg_contact_per_day_per_school
+                                      ,vn_per_workplace
+                                      ,vnavg_contact_per_day_per_workplace
+){
+  
+  vfrom   = edge.attributes(net)$vfrom
+  vto     = edge.attributes(net)$vto
+  vweight = edge.attributes(net)$vweight
+  vnavg_contact_per_day = edge.attributes(net)$vnavg_contact_per_day
+  vid = as.numeric(vertex.attributes(net)$vid)
+  vage = as.numeric(vertex.attributes(net)$vage)
+  vdone = rep(0,length(vage))
+  
+  ldone_kids = 0
+  while(!ldone_kids){
+    iind = which(vage==0&vdone==0)
+    if (length(iind)>=min(vn_per_school)){
+      k = sample(length(vn_per_school),1)
+      nper_school = vn_per_school[k]
+      navg_contact_per_day = vnavg_contact_per_day_per_school[k]
+      if (nper_school<=length(iind)){
+        kkids = sample(iind,nper_school)
+        vdone[kkids] = 1
+        for (i in kkids){
+          for (j in kkids){
+            if (i!=j){
+              vfrom = append(vfrom,i)
+              vto   = append(vto,j)
+              vnavg_contact_per_day = append(vnavg_contact_per_day,navg_contact_per_day)
+            } # end check that it isn't the same person contacting themselves
+          } # end loop over people in school
+        } # end loop over people in school
+      }
+    }else{
+      ldone_kids = 1
+    }
+  }
+  
+  ldone_adults = 0
+  while(!ldone_adults){
+    iind = which(vage==1&vdone==0)
+    if (length(iind)>=min(vn_per_workplace)){
+      k = sample(length(vn_per_workplace),1)
+      nper_workplace = vn_per_workplace[k]
+      navg_contact_per_day = vnavg_contact_per_day_per_workplace[k]
+      if (nper_workplace<=length(iind)){
+        kadults = sample(iind,nper_workplace)
+        vdone[kadults] = 1
+        for (i in kadults){
+          for (j in kadults){
+            if (i!=j){
+              vfrom = append(vfrom,i)
+              vto   = append(vto,j)
+              vnavg_contact_per_day = append(vnavg_contact_per_day,navg_contact_per_day)
+            } # end check that it isn't the same person contacting themselves
+          } # end loop over people in workplace
+        } # end loop over people in workplace
+      }
+    }else{
+      ldone_adults = 1
+    }
+  }
+  
+  ################################################################################
+  ################################################################################
+  # create data frames with the node and vertex information
+  ################################################################################
+  nodes = data.frame(id=vid,color=(vage+1))
+  
+  ################################################################################
+  # aggregate duplicate links to sum the average number of contacts per day
+  ################################################################################
+  g = aggregate(vnavg_contact_per_day,by=list(vfrom,vto),FUN="sum")
+  #links = data.frame(from=vfrom,to=vto,weight=vnavg_contact_per_day)
+  links = data.frame(from=g[[1]],to=g[[2]],weight=g[[3]])
+  
+  
+  ################################################################################
+  # put this information into an igraph network object
+  ################################################################################
+  net=graph.data.frame(links, nodes, directed=T)
+  V(net)$vid   = vid 
+  V(net)$vage  = vage
+  E(net)$vfrom = vfrom
+  E(net)$vto   = vto
+  E(net)$vnavg_contact_per_day = vnavg_contact_per_day
+  
+  return(list(net=net,vid=vid,vage=vage,vfrom=vfrom,vto=vto,vnavg_contact_per_day=vnavg_contact_per_day))
+  
+}
+
+
+
+
+##################################################################################
+##################################################################################
+# a function to simulate the spread of a disease on a network, and plot the
+# spread on a network graph
+#
+# state=0 is neutral
+# state=1 is Opinion 1
+# state=2 is Opinion 2
+
+##################################################################################
+
+simulate_sir_disease_spread_on_network=function(net
+                                                ,tbeg
+                                                ,tend
+                                                ,delta_t){
+
+##################################################################################
+
+#GENERATES NETWORK PLOT
+
+  if (length(V(net)$state)==length(V(net)$name)){
+    n_edge = length(E(net)$weight)
+    n_vertex  = length(V(net)$name)
+    V(net)$color=rep(1,n_vertex)
+    V(net)$color[V(net)$state==1]=3
+    V(net)$color[V(net)$state==2]=4
+    vnavg_contact_per_day = edge.attributes(net)$vnavg_contact_per_day
+    
+    mult.fig(1)
+    layout = layout.fruchterman.reingold(net, repulserad=vcount(net)^3,area=vcount(net)^2.4)
+    ltrans_x = 2*((layout[,1]-min(layout[,1]))/(max(layout[,1])-min(layout[,1]))-0.5)
+    ltrans_y = 2*((layout[,2]-min(layout[,2]))/(max(layout[,2])-min(layout[,2]))-0.5)
+    plot(net
+         ,edge.arrow.size=.4
+         ,vertex.label=NA
+         ,vertex.size=4.0
+         ,edge.arrow.size=0.001
+         ,edge.arrow.width=0.001
+         ,layout=layout,
+         ,xlim=c(-1.1,1.1)
+         ,ylim=c(-1.1,1.1))
+    legend("bottomleft",legend=c("Neutral","Opinion 1","Opinion 2"),col=c(1,3,4),lwd=4,bty="n")
+    
+##########################################################################################################
+
+#INTIALIZION OF THE STATE AND PARAMETER VECTORS
+
+V(net)$state_new = V(net)$state
+
+N=seq(1,Npeople)
+force_0=rbinom(n=length(N),size=1,prob=1)
+t = tbeg
+vS = numeric(0)
+vI = numeric(0)
+vJ = numeric(0)
+vtime = numeric(0)
+neutral=numeric(0)
+opinion_1=numeric(0)
+opinion_2=numeric(0)
+who_12=numeric(0)
+who_21=numeric(0)
+who_n1=numeric(0)
+who_n2=numeric(0)
+vSnew=numeric(0)
+vInew=numeric(0)
+vJnew=numeric(0)
+who_21_n1=numeric(0)
+who_12_n2=numeric(0)
+flip_1=numeric(0)
+flip_2=numeric(0)
+row1=numeric(0)
+row2=numeric(0)
+opinion_1A=numeric(0)
+opinion_2A=numeric(0)
+neutralA=numeric(0)
+rows=rep(1,1)
+y=numeric(0)
+yy=numeric(0)
+yyy=numeric(0)
+z=numeric(0)
+zz=numeric(0)
+zzz=numeric(0)
+max_media_effort_to_neutral=numeric(0)
+max_media_effort_to_opinion_1=numeric(0)
+max_media_effort_to_opinion_2=numeric(0)
+flip_n=numeric(0)
+
+#################################################################################
+
+#PROGRAM RUNS CONTINUOUSLY UNTIL SUM(ROWS)==0 (A SEQUECE OF FLIPS THAT IS ALL ZEROS)
+
+while(sum(rows)>0){
+  #time=(tbeg:tend)
+     while(t<tend){
+  #for(t in time){
+       
+cat(t,"= iteration \n")
+
+#################################################################################
+       
+#SPREADS OPINION 1
+
+      opinion_1_weight=2  #CAN CHANGE THIS (increase parameter > 1 to spread opinion 1 faster)
+
+      vpois = rpois(n_edge
+                    ,delta_t*vnavg_contact_per_day*opinion_1_weight)
+      linf = rep(0,n_edge)
+      linf[which(V(net)$state[E(net)$vfrom]==1)] = 1
+      vpois = vpois*linf
+      iind = which(vpois>0)
+      wto = unique(E(net)$vto[iind])
+      jind = rep(0,n_vertex)
+      jind[wto] = 1
+      V(net)$state_new[(jind==1&V(net)$state==2)|(jind==1&V(net)$state==0)] = 1
+
+#################################################################################
+
+#SPREADS OPINION 2
+
+      wpois = rpois(n_edge
+                    ,delta_t*vnavg_contact_per_day)
+      linff = rep(0,n_edge)
+      linff[which(V(net)$state[E(net)$vfrom]==1)] = 2
+      wpois = wpois*linff
+      jjnd = which(wpois>0)
+      wwto = unique(E(net)$vto[jjnd])
+      jjind = rep(0,n_vertex)
+      jjind[wwto] = 1
+      V(net)$state_new[(jjind==1&V(net)$state==1)|(jjind==1&V(net)$state==0)] = 2
+      
+      yup = runif(n_vertex)
+      
+########################################################################################################## 
+
+#COLORS THE NODES OF THE NETWORK AND APPENDS VALUES TO THE STATE VECTORS
+
+      V(net)$color[V(net)$state_new==0]=1
+      V(net)$color[V(net)$state_new==1]=3
+      V(net)$color[V(net)$state_new==2]=4
+      
+      V(net)$state = V(net)$state_new
+      points(ltrans_x,ltrans_y,col=V(net)$color)
+      
+      vS = append(vS,sum(V(net)$state==0))
+      vI = append(vI,sum(V(net)$state==1))
+      vJ = append(vJ,sum(V(net)$state==2))
+      vtime = append(vtime,t)
+
+################################################################################
+
+#DETERMINES WHICH NODES ARE IN STATES NEUTRAL, OPINION 1, AND OPINION 2 AT CURRENT TIME
+
+V(net)$state_new = V(net)$state
+
+neutral=which(V(net)$state == 0)
+opinion_1=which(V(net)$state == 1)
+opinion_2=which(V(net)$state == 2)
+
+# node=append(neutral,opinion_1)
+# nodes=append(node,opinion_2)
+
+cat(neutral,"= neutral\n",length(neutral),"= length of neutral\n",opinion_1,"= opinion_1\n",length(opinion_1),"= length of opinion_1\n",opinion_2,"= opinion_2\n",length(opinion_2),"= length of opinion_2\n")
+
+################################################################################
+
+#KEEPS TRACK OF HOW LONG EACH NODE IN THE NETWORK HAS BEEN IN A CERTAIN STATE
+#NOTE: If node switches opinion then the counter sets back to 1
+
+for(i in N){
+  if((i %in% neutral) & !(i %in% neutralA)){force_0[i]=1}
+  if((i %in% neutral) & (i %in% neutralA)){force_0[i]=force_0[i]+1}
+  if((i %in% opinion_1) & !(i %in% opinion_1A)){force_0[i]=1}
+  if((i %in% opinion_1) & i %in% opinion_1A){force_0[i]=force_0[i]+1}
+  if((i %in% opinion_2) & !(i %in% opinion_2A)){force_0[i]=1}
+  if((i %in% opinion_2) & (i %in% opinion_2A)){force_0[i]=force_0[i]+1}
+}
+
+cat(force_0,"= force_0\n",length(force_0),"=length of force_0\n")
+
+################################################################################
+
+#REPRESENTS NODES IN CERTAIN STATES AT THE PREVIOUS TIME STEP
+
+neutralA=which(V(net)$state == 0)
+opinion_1A=which(V(net)$state == 1)
+opinion_2A=which(V(net)$state == 2)
+
+################################################################################
+
+#CAN CHANGE THESE PARAMETERS: Currently the program samples up to the length of a state vector
+
+max_media_effort_to_neutral=length(neutral)
+max_media_effort_to_opinion_1=length(opinion_1)
+max_media_effort_to_opinion_2=length(opinion_2)
+
+cat(max_media_effort_to_neutral,"= max_media_effort_to_neutral\n",max_media_effort_to_opinion_1,"= max_media_effort_to_opinion_1\n",max_media_effort_to_opinion_2,"= max_media_effort_to_opinion_2\n")
+
+################################################################################
+
+#DETERMINES HOW MANY NODES TO SELECT FROM THE NEUTRAL, OPINION 1, AND OPINION 2 STATES
+#CAN CHANGE THESE PARAMETERS: Currently the program samples up to the length of a state vector
+
+y= sample(max_media_effort_to_neutral,size=1,replace =FALSE)
+#y=1 #OPTION (can be any number up to the size of the neutral vector)
+
+yy= sample(max_media_effort_to_opinion_1,size=1,replace =FALSE)                   #randomly chooses size of media influence
+#yy=1 #OPTION (can be any number up to the size of the opinion_1 vector)
+
+yyy= sample(max_media_effort_to_opinion_2,size=1,replace =FALSE)                   #randomly chooses size of media influence
+#yyy=1 #OPTION (can be any number up to the size of the opinion_2 vector)
+
+cat(y,"= how many sampled from neutral\n", yy,"= how many sampled from opinion_1\n", yyy,"= how many sampled from opinion_2\n")
+
+
+################################################################################
+
+#PROGRAM RANDOMLY SELECTS PARTICULAR NODES FROM THE NEUTRAL, OPINION 1, AND OPINION 2 STATES
+#NOTE: Length of z should equal y
+
+z=sample(neutral,y, replace =FALSE)
+zz=sample(opinion_1,yy, replace =FALSE) 
+zzz=sample(opinion_2,yyy, replace =FALSE)
+
+cat(z,"= who sampled from neutral\n", zz,"= who sampled from opinion_1\n", zzz,"= who sampled from opinion_2\n")
+
+################################################################################
+
+#MULTINOMIAL PROCESS FOR THE NEUTRAL NODES SELECTED
+
+    p1=1/4    #CAN CHANGE THIS PROBABILITY (p1+p2+p3 must equal 1)
+    p2=1/2    #CAN CHANGE THIS PROBABILITY (p2>p1 if want bias for opinion_2)
+    p3=1/4    #CAN CHANGE THIS PROBABILITY (either p2>p3, p2<p3, or p2=p3 because p3 is prob of neutral staying neutral)
+    
+    flip_n = rmultinom(n = length(z), size = 1, prob = c(p1,p2,p3))       #flips a coin for each element in z
+    cat(flip_n,"flip_n\n",length(flip_n),"= length of flip_n\n") #feedback is elements in row1 then row2 then row3 then row1 and so forth
+
+################################################################################
+
+#BERNOULLI PROCESS FOR NODES SELECTED IN OPINION 1 AND OPINION 2
+
+  for(i in N){
+    
+    if(i %in% opinion_1){
+      #CAN CHANGE THIS PROBAILITY (currently the probability of switching decreases exponentially for every time step that a node is in a certain state)
+      #theta1=1/(4^(force_0[i]))
+      theta1=1/(2^(force_0[i]))
+      
+      flip_2= rbinom(n = length(zz), size = 1, prob = theta1)
+      #cat(theta1,"theta1[i]\n")
+    }
+
+    if(i %in% opinion_2){
+      
+      #CAN CHANGE THIS PROBAILITY (currently the probability of switching decreases exponentially for every time step that a node is in a certain state)
+      #theta2=1/(4^(force_0[i]))
+      theta2=1/(2^(force_0[i]))
+      
+      flip_1= rbinom(n = length(zzz), size = 1, prob = theta2)
+      #cat(theta2,"theta2[i]\n")
+    }
+  }
+
+####################################################################################################
+
+#PROVIDES FEEDBACK OF WHO LANDED ON 1 FOR THE MULTINOMIAL PROCESS
+
+row1=flip_n[1,]
+row2=flip_n[2,]
+row3=flip_n[3,]
+who_n1=z[which(flip_n[1,]==1)]
+who_n2=z[which(flip_n[2,]==1)]
+who_n3=z[which(flip_n[3,]==1)]
+sum_n1=sum(row1)
+sum_n2=sum(row2)
+
+cat(row1,"= row1\n",row2,"= row2\n",row3,"= row3\n",who_n1,"= who_n1\n",who_n2,"= who_n2\n",who_n3,"= who_n3\n",sum_n1,"= sum_n1\n",sum_n2,"= sum_n2\n")
+
+####################################################################################################
+
+#PROVIDES FEEDBACK OF WHICH OPINION 2 NODES SWITCHED TO OPINION 1 AND APPENDS TO VECTOR OF NEUTRALS WHO WENT OPINION 1
+
+who_21 = zz[which(flip_1==1)]                                 #tells what element in z had a coin flip that landed on 1
+who_21_n1 = append(who_21,who_n1)
+sum1=sum(flip_1)
+cat(flip_1,"= flip_1\n",length(flip_1),"=length of flip_1\n",who_21,"= who_21\n",length(who_21),"= length of who_21\n")
+
+####################################################################################################
+
+#PROVIDES FEEDBACK OF WHICH OPINION 1 NODES SWITCHED TO OPINION 2 AND APPENDS TO VECTOR OF NEUTRALS WHO WENT OPINION 2
+
+who_12 =  zzz[which(flip_2==1)]  
+who_12_n2 = append(who_12,who_n2)
+sum2=sum(flip_2)
+cat(flip_2,"= flip_2\n",length(flip_2),"=length of flip_2\n",who_12,"= who_12\n",length(who_12),"= length of who_12\n")
+
+####################################################################################################
+
+rows=sum(sum_n1,sum_n2,sum1,sum2)
+
+cat(rows,"=rows\n",tbeg,"= tbeg\n",tend,"= tend\n")
+
+####################################################################################################
+
+#PROGRAM TERMINATES WHEN RANDOM FLIPPING GENERATES A SEQUENCE OF ALL ZEROS
+
+if(sum(rows)==0){
+  return(list(vtime=vtime,vS=vS,vI=vI,vJ=vJ,neutral=neutral,opinion_1=opinion_1,who_21_n1=who_21_n1,opinion_2=opinion_2,who_12_n2=who_12_n2,who_21=who_21,who_12=who_12,y=y,z=z,who_n1=who_n1,who_n2=who_n2,vSnew=vSnew,vInew=vInew,vJnew=vJnew,rows=rows,flip_n=flip_n,net=net))
+  stop("A SEQUENCE OF ZEROS")
+}
+
+##########################################################################################################
+
+#COLORS THE NODES THAT SWITCHED AND PUTS THEM INTO A VECTOR
+
+V(net)$state_new[who_21_n1] = 1
+V(net)$state_new[who_12_n2] = 2
+V(net)$color[V(net)$state_new==1]=3
+V(net)$color[V(net)$state_new==2]=4
+V(net)$state = V(net)$state_new
+vSnew = append(vSnew,sum(V(net)$state==0))
+vInew = append(vInew,sum(V(net)$state==1))
+vJnew = append(vJnew,sum(V(net)$state==2))
+#vS = append(vS,sum(V(net)$state==0))
+#vI = append(vI,sum(V(net)$state==1))
+#vJ = append(vJ,sum(V(net)$state==2))
+points(ltrans_x,ltrans_y,col=V(net)$color)
+
+t=t+1
+#t = t+delta_t
+
+}
+tbeg=tbeg+50
+tend=tend+50
+}
+}
+}
+
+##########################################################################################################
