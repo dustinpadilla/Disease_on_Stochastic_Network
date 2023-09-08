@@ -1,0 +1,136 @@
+##################################################################################
+##################################################################################
+# An R script to setup population structure in households
+# and schools/workplace, and simulate the spread of an Susceptible
+# Infected, Recovered type disease on the network
+#
+# Author:  Dustin Padilla
+#          dustin.padilla@asu.edu
+# Created: April 25, 2016
+#
+# Copyright Dustin Padilla, Every year
+#
+# This script is not guaranteed to be free of bugs and/or errors
+#
+# This script can be freely used and shared as long as the author and 
+# copyright information in this header remain intact.
+##################################################################################
+
+rm(list = ls(all = TRUE)) 
+set.seed(57819)                   #CAN CHANGE THIS OR CAN COMMENT OUT (random seed)
+require("sfsmisc")
+source("two_pop_structure_utils.R")
+par(pch=20)
+
+linclude_school_and_work = 1
+
+##################################################################################
+##################################################################################
+# read in US census household demographic data
+##################################################################################
+
+hdat = read.table("US_household_demographics_2015.csv",header=T,sep=",",as.is=T)
+#hdat = subset(hdat,!grepl("Total",Total))
+#hdat = subset(hdat,Total!="")
+l = which(!(grepl("Total",hdat$Total)|hdat$Total==""))
+hdat[l,2] = as.numeric(gsub(",","",hdat[l,2]))
+nhouse = as.numeric(hdat[89,2])
+nnon_family = as.numeric(hdat[99,2])
+fnon_family = as.numeric(hdat[99,2])/as.numeric(hdat[89,2])
+
+cdat = read.table("US_living_arrangements_of_children_2015.csv",header=T,sep=",",as.is=T)
+cdat[,2] = as.numeric(gsub(",","",cdat[,2]))
+ntot_kid_household = cdat[1,2]
+ntot_kid_with_both_parent_household = cdat[4,2]
+ftot_kid_with_both_parent_household = cdat[4,2]/cdat[1,2]
+
+
+udat = read.table("US_family_household_characteristics_2015.csv",header=T,sep=",",as.is=T)
+vnum_kids = c(0,1,2,3,4,5)
+prob_num_kids = c(udat[97,2],udat[98,2],udat[99,2],udat[100,2],udat[101,2],udat[102,2])
+prob_num_kids = as.numeric(gsub(",","",prob_num_kids))
+prob_num_kids = prob_num_kids/sum(prob_num_kids)
+
+around = 4
+cat("Non-family households = ",round(fnon_family,around),"\n")
+cat("Family households, 0 kids = ",round((1-fnon_family)*prob_num_kids[1],around),"\n")
+cat("Couple households, 1 kids = ",round(ftot_kid_with_both_parent_household*(1-fnon_family)*prob_num_kids[2],around),"\n")
+cat("Couple households, 2 kids = ",round(ftot_kid_with_both_parent_household*(1-fnon_family)*prob_num_kids[3],around),"\n")
+cat("Couple households, 3 kids = ",round(ftot_kid_with_both_parent_household*(1-fnon_family)*prob_num_kids[4],around),"\n")
+cat("Couple households, 4 kids = ",round(ftot_kid_with_both_parent_household*(1-fnon_family)*prob_num_kids[5],around),"\n")
+cat("Couple households, 5 kids = ",round(ftot_kid_with_both_parent_household*(1-fnon_family)*prob_num_kids[6],around),"\n")
+cat("Single-parent households, 1 kids = ",round((1-ftot_kid_with_both_parent_household)*(1-fnon_family)*prob_num_kids[2],around),"\n")
+cat("Single-parent households, 2 kids = ",round((1-ftot_kid_with_both_parent_household)*(1-fnon_family)*prob_num_kids[3],around),"\n")
+cat("Single-parent households, 3 kids = ",round((1-ftot_kid_with_both_parent_household)*(1-fnon_family)*prob_num_kids[4],around),"\n")
+cat("Single-parent households, 4 kids = ",round((1-ftot_kid_with_both_parent_household)*(1-fnon_family)*prob_num_kids[5],around),"\n")
+cat("Single-parent households, 5 kids = ",round((1-ftot_kid_with_both_parent_household)*(1-fnon_family)*prob_num_kids[6],around),"\n")
+
+##################################################################################
+##################################################################################
+# set up the population and network the kids and adults into households
+##################################################################################
+##################################################################################
+
+#SIZE OF POPULATION --  CAN CHANGE THIS
+
+Npeople=100
+
+##################################################################################
+
+
+navg_contact_per_day = 0.5
+a = setup_households(Npeople
+                     ,fnon_family   
+                     ,vnum_kids     
+                     ,prob_num_kids 
+                     ,ftot_kid_with_both_parent_household
+                     ,navg_contact_per_day)     
+
+##################################################################################
+# if we are including work and schools, add those connections to the 
+# network
+##################################################################################
+if (linclude_school_and_work){
+  b=setup_schools_and_workplaces(a$net
+                                 ,20
+                                 ,0.10
+                                 ,5
+                                 ,0.01)
+  a = b
+}
+
+##################################################################################
+# print out the fraction of the population that is kids
+##################################################################################
+print(names(a))
+cat("The fraction of the population that is kids is ",sum(a$vage==0)/length(a$vage),"\n")
+
+##################################################################################
+# now simulate the spread of a disease on the network
+# pick some people on the network to be infected
+#
+# the vertex state vector is
+# 0=susceptible
+# 1=infected
+# 2=recovered
+##################################################################################
+
+n_vertex  = length(V(a$net)$name)
+I_0 = 1                           #CAN CHANGE THIS (initial number with opinion 1)
+J_0 = 1                           #CAN CHANGE THIS (initial number with opinion 2)
+iind = sample(n_vertex,I_0)
+jjnd = sample(n_vertex,J_0)
+V(a$net)$state=rep(0,n_vertex)
+V(a$net)$state[iind] = 1
+V(a$net)$state[jjnd] = 2
+tbeg = 1
+tend = 50
+delta_t = 0.1
+b=simulate_sir_disease_spread_on_network(a$net
+                                         ,tbeg
+                                         ,tend
+                                         ,delta_t)
+
+par(new=T)
+par(mfrow=c(5,5))
+
